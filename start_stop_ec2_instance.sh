@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -uo pipefail
 aws_region="ap-south-1"
+log_file="$HOME/ec2_manager.log"
+log(){
+    local level="$1"; shift
+    printf '%s [%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$USER" "$*" >> "$log_file"
 
+}
 check_prerequisites(){
 # is the aws CLI installed? are credentials valid?
    if ! command -v aws &> /dev/null; then
@@ -12,7 +17,7 @@ check_prerequisites(){
 # Are the credentials configured and valid?
 
     if ! aws sts get-caller-identity &> /dev/null; then
-        echo "Error: AWS credentials are missing or invaild." >&2
+        echo "Error: AWS credentials are missing or invalid." >&2
         echo "Run aws configure to set them up" >&2
         exit 1
     fi
@@ -46,7 +51,7 @@ validate_instance_id() {
 }
 
 start_instance(){
-    local stopped instance_id current_state
+    local stopped instance_id current_state final_state
     stopped=$(aws ec2 describe-instances \
         --region "$aws_region" \
         --filters "Name=instance-state-name,Values=stopped" \
@@ -65,27 +70,40 @@ start_instance(){
     read -r -p "Enter instance ID: " instance_id
 
     if ! validate_instance_id "$instance_id"; then
-         echo "Invalid instance ID." >&2
-         return 1
+        echo "Invalid instance ID." >&2
+        log ERROR "Invalid instance ID entered: '$instance_id'"
+        return 1
     fi
     current_state=$(get_state "$instance_id") || {
-         echo "Instance $instance_id not found." >&2
-         return 1
+        echo "Instance $instance_id not found." >&2
+        log ERROR "Instance not found: $instance_id"
+        return 1
 }
 
     case "$current_state" in
-         running)  echo "Instance is already running."; return 0 ;;
-         stopped)  ;;   # good, carry on and start it
-         *)        echo "Instance is '$current_state'. Wait and try again."; return 1 ;;
+        running)  echo "Instance is already running."; return 0 ;;
+        stopped)  ;;   # good, carry on and start it
+        *)        echo "Instance is '$current_state'. Wait and try again."; return 1 ;;
     esac
     echo "Starting $instance_id..."
-    aws ec2 start-instances --region "$aws_region" --instance-ids "$instance_id" > /dev/null
-    aws ec2 wait instance-running --region "$aws_region" --instance-ids "$instance_id"
-    echo "Instance $instance_id is now $(get_state "$instance_id")."
+    log INFO "Start requested: $instance_id"
+    if ! aws ec2 start-instances --region "$aws_region" --instance-ids "$instance_id" > /dev/null; then
+        echo "Failed to start $instance_id." >&2
+        log ERROR "start-instances failed: $instance_id"
+        return 1
+    fi
+    if ! aws ec2 wait instance-running --region "$aws_region" --instance-ids "$instance_id" > /dev/null; then
+        echo "Timed out waiting for $instance_id to start." >&2
+        log ERROR "wait instance-start timed out: $instance_id"
+        return 1
+    fi    
+    final_state=$(get_state "$instance_id")
+    log INFO "$instance_id is now $final_state"
+    echo "Instance $instance_id is now $final_state."
 
 }
 stop_instance() {
-    local running instance_id current_state confirm
+    local running instance_id current_state confirm final_state
 
     running=$(aws ec2 describe-instances \
         --region "$aws_region" \
@@ -105,11 +123,13 @@ stop_instance() {
 
     if ! validate_instance_id "$instance_id"; then
         echo "Invalid instance ID." >&2
+        log ERROR "Invalid instance ID entered: '$instance_id'"
         return 1
     fi
 
     current_state=$(get_state "$instance_id") || {
         echo "Instance $instance_id not found." >&2
+        log ERROR "Instance not found: $instance_id"
         return 1
     }
 
@@ -119,14 +139,28 @@ stop_instance() {
         *)       echo "Instance is '$current_state'. Wait and try again."; return 1 ;;
     esac
     read -r -p "Are you sure you want to stop $instance_id? (y/n): " confirm
-    [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Cancelled."; return 0; }
+    [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Cancelled."; log WARN "Stop cancelled by user: $instance_id"; return 0; }
     echo "Stopping $instance_id..."
-    aws ec2 stop-instances --region "$aws_region" --instance-ids "$instance_id" > /dev/null
-    aws ec2 wait instance-stopped --region "$aws_region" --instance-ids "$instance_id"
-    echo "Instance $instance_id is now $(get_state "$instance_id")."
+    log INFO "Stop requested: $instance_id"
+    
+    if ! aws ec2 stop-instances --region "$aws_region" --instance-ids "$instance_id" > /dev/null; then
+        echo "Failed to Stop $instance_id." >&2
+        log ERROR "stop-instance failed: $instance_id"
+        return 1
+    fi    
+    if ! aws ec2 wait instance-stopped --region "$aws_region" --instance-ids "$instance_id"; then
+        echo "Timed out waiting for $instance_id to stop." >&2
+        log ERROR "wait instance-stopped timed out: $instance_id"
+        return 1
+    fi
+    
+    final_state=$(get_state "$instance_id")
+    log INFO "$instance_id is now $final_state"
+    echo "Instance $instance_id is now $final_state."
 }
 
 check_prerequisites
+log INFO "Script started (region: $aws_region)"
 while true;do
 
 # A Menu driven EC2 instance start/stop/status script
@@ -135,7 +169,7 @@ while true;do
     cat << EOF
 
 Please select:
-    1. Display the all instances (ID, Name, State) 
+    1. Display all instances (ID, Name, State) 
     2. Start an Instance.
     3. Stop an Instance.
     0. Quit
@@ -144,9 +178,9 @@ EOF
 
     read -r -p "Enter Option [0-3]:" option
     
-    case $option in
+    case "$option" in
 
-        0) echo "Script Exited."; break ;;
+        0) echo "Script Exited."; log INFO "Script exited"; break ;;
         1) status_instance ;;
         2) start_instance ;; 
         3) stop_instance ;;
