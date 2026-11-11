@@ -102,6 +102,30 @@ start_instance(){
     echo "Instance $instance_id is now $final_state."
 
 }
+know_ip_instance(){
+
+    local running 
+    running=$(aws ec2 describe-instances \
+        --region "$aws_region" \
+        --filters "Name=instance-state-name,Values=running" \
+        --query 'Reservations[].Instances[].[InstanceId,Tags[?Key=='Name']|[0].Value, PublicIpAddress]' \
+        --output text)
+
+    if [[ -z "$running" ]]; then
+        echo " No running instances in $aws_region."
+        return 0
+    fi
+
+    echo " Running Instances Public IP Address:"
+    printf " %-22s %-25s %-16s\n" "INSTANCE ID" "NAME" "PUBLIC IP"
+    printf " %-22s %-25s %-16s\n" "-----------" "----" "---------"
+
+    while read -r instance_id name pub_ip_address; do
+        [[ "$name" == "None" ]] && name="-"
+        [[ "$pub_ip_address" == "None" ]] && pub_ip_address="(no public IP)"
+        printf " %-22s %-25s %-16s\n" "$instance_id" "$name" "$pub_ip_address"
+    done <<< "$running"
+}
 stop_instance() {
     local running instance_id current_state confirm final_state
 
@@ -172,11 +196,12 @@ Please select:
     1. Display all instances (ID, Name, State) 
     2. Start an Instance.
     3. Stop an Instance.
+    4. Know PublicIPAddress.
     0. Quit
 
 EOF
 
-    read -r -p "Enter Option [0-3]:" option
+    read -r -p "Enter Option [0-4]:" option
     
     case "$option" in
 
@@ -184,6 +209,7 @@ EOF
         1) status_instance ;;
         2) start_instance ;; 
         3) stop_instance ;;
+        4) know_ip_instance ;;
         *) echo "Invalid option." >&2 ;;
 
     esac
