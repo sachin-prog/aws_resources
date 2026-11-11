@@ -13,6 +13,7 @@ It is built with safety in mind: it checks prerequisites before running, validat
 - **Prerequisite checks**: verifies the AWS CLI is installed and the credentials are valid before showing the menu
 - **Input validation**: rejects empty or malformed instance IDs before calling AWS
 - **State checks**: won't start an instance that's already running or stop one that's already stopped, and handles transitional states (`pending`, `stopping`)
+- ** Know Public Ip Address ** : Shows the Public ip address
 
 ## Prerequisites
 
